@@ -148,6 +148,8 @@
                     </execution>
                 </executions>
                 <configuration>
+                    <!-- Pinned: without it, the plugin uses its own default version -->
+                    <jmeterVersion>5.6.3</jmeterVersion>
                     <!-- The plugin obeys -DskipTests too: the gate would then pass on the previous run's results -->
                     <skipTests>false</skipTests>
                     <testFilesIncluded>
