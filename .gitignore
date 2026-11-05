@@ -1,0 +1,8 @@
+# Maven build output, JMeter results and reports
+target/
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE settings
+.idea/
+*.iml
+.vscode/
