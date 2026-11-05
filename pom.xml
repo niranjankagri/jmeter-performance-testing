@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A small ticket-booking API (the system under test), its JMeter performance tests, and an SLO gate.
+
+  ./mvnw verify            unit tests, then the smoke profile
+  ./mvnw verify -Pload     the same with the load profile (also: -Pstress, -Pspike)
+
+  What verify does, in phase order:
+    test                    JUnit tests of the API and the gate
+    pre-integration-test    starts the API in the background, waits until it answers
+    integration-test        JMeter runs src/test/jmeter/booking.jmx with the profile's load
+    verify                  SloGate reads the results and fails the build if an SLO is missed
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.niranjankagri</groupId>
+    <artifactId>jmeter-performance-testing</artifactId>
+    <version>1.0.0</version>
+    <name>jmeter-performance-testing</name>
+    <description>Performance testing with Apache JMeter: load profiles, an SLO gate and correctness under load</description>
+
+    <properties>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <jackson.version>2.22.4</jackson.version>
+        <junit.version>6.1.3</junit.version>
+        <assertj.version>3.27.7</assertj.version>
+        <app.port>18080</app.port>
+
+        <!-- The load shape. The smoke values are the defaults; each profile below overrides them. -->
+        <load.profile>smoke</load.profile>
+        <load.users>5</load.users>
+        <load.rampSeconds>5</load.rampSeconds>
+        <load.durationSeconds>30</load.durationSeconds>
+        <load.burstUsers>0</load.burstUsers>
+        <load.burstDelaySeconds>0</load.burstDelaySeconds>
+        <load.burstDurationSeconds>1</load.burstDurationSeconds>
+        <!-- false: the gate reports but doesn't fail. The stress test looks for the limit, so it is meant to pass it. -->
+        <slo.enforce>true</slo.enforce>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.16.0</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.6.1</version>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.6.4</version>
+                <executions>
+                    <!-- async: Maven carries on while the API runs, and stops it when the build ends -->
+                    <execution>
+                        <id>start-api</id>
+                        <phase>pre-integration-test</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>${java.home}/bin/java</executable>
+                            <arguments>
+                                <argument>-classpath</argument>
+                                <classpath/>
+                                <argument>com.niranjankagri.booking.Main</argument>
+                                <argument>${app.port}</argument>
+                            </arguments>
+                            <async>true</async>
+                            <asyncDestroyOnShutdown>true</asyncDestroyOnShutdown>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>wait-for-api</id>
+                        <phase>pre-integration-test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <mainClass>com.niranjankagri.gate.WaitForApi</mainClass>
+                            <arguments>
+                                <argument>http://localhost:${app.port}/health</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>slo-gate</id>
+                        <phase>verify</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <mainClass>com.niranjankagri.gate.SloGate</mainClass>
+                            <arguments>
+                                <argument>${project.build.directory}/jmeter/results/booking.csv</argument>
+                                <argument>${project.basedir}/config/slo/${load.profile}.properties</argument>
+                                <argument>${project.build.directory}/slo-report.md</argument>
+                                <argument>${slo.enforce}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>com.lazerycode.jmeter</groupId>
+                <artifactId>jmeter-maven-plugin</artifactId>
+                <version>3.8.0</version>
+                <executions>
+                    <execution>
+                        <id>configuration</id>
+                        <goals><goal>configure</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>run</id>
+                        <goals><goal>jmeter</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <!-- The plugin obeys -DskipTests too: the gate would then pass on the previous run's results -->
+                    <skipTests>false</skipTests>
+                    <testFilesIncluded>
+                        <jMeterTestFile>booking.jmx</jMeterTestFile>
+                    </testFilesIncluded>
+                    <!-- A fixed file name, so the gate can find the results -->
+                    <testResultsTimestamp>false</testResultsTimestamp>
+                    <!-- The HTML dashboard, in target/jmeter/reports/booking -->
+                    <generateReports>true</generateReports>
+                    <propertiesUser>
+                        <port>${app.port}</port>
+                        <usersFile>${project.basedir}/src/test/jmeter/users.csv</usersFile>
+                        <users>${load.users}</users>
+                        <rampSeconds>${load.rampSeconds}</rampSeconds>
+                        <durationSeconds>${load.durationSeconds}</durationSeconds>
+                        <burstUsers>${load.burstUsers}</burstUsers>
+                        <burstDelaySeconds>${load.burstDelaySeconds}</burstDelaySeconds>
+                        <burstDurationSeconds>${load.burstDurationSeconds}</burstDurationSeconds>
+                    </propertiesUser>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Normal traffic, below the API's booking limit -->
+        <profile>
+            <id>load</id>
+            <properties>
+                <load.profile>load</load.profile>
+                <load.users>30</load.users>
+                <load.rampSeconds>20</load.rampSeconds>
+                <load.durationSeconds>120</load.durationSeconds>
+            </properties>
+        </profile>
+        <!-- Users rise for the whole test, to find where the API stops keeping up -->
+        <profile>
+            <id>stress</id>
+            <properties>
+                <load.profile>stress</load.profile>
+                <load.users>120</load.users>
+                <load.rampSeconds>170</load.rampSeconds>
+                <load.durationSeconds>180</load.durationSeconds>
+                <slo.enforce>false</slo.enforce>
+            </properties>
+        </profile>
+        <!-- Normal traffic with a sudden burst in the middle: does the API recover? -->
+        <profile>
+            <id>spike</id>
+            <properties>
+                <load.profile>spike</load.profile>
+                <load.users>15</load.users>
+                <load.rampSeconds>10</load.rampSeconds>
+                <load.durationSeconds>120</load.durationSeconds>
+                <load.burstUsers>80</load.burstUsers>
+                <load.burstDelaySeconds>45</load.burstDelaySeconds>
+                <load.burstDurationSeconds>20</load.burstDurationSeconds>
+            </properties>
+        </profile>
+    </profiles>
+</project>
